@@ -1,0 +1,93 @@
+-- Funtion : Nhập vào mã sản phẩm,tìm tổng lượng tồn kho ở trên toàn bộ hệ thống và chi nhánh
+CREATE OR REPLACE FUNCTION FUNCTION1(PRODID PRODUCT.PRODUCT_ID%TYPE)
+RETURN NUMBER
+AS
+V_TONGSOLUONG NUMBER;
+BEGIN
+ SELECT SUM(QUANTITY) INTO V_TONGSOLUONG
+ FROM(
+ SELECT SUM(B1.QUANTITY) AS QUANTITY 
+ FROM INVENTORY B1
+ WHERE B1.PRODUCT_ID = PRODID
+ UNION ALL
+ SELECT SUM(B2.QUANTITY) AS QUANTITY 
+ FROM INVENTORY@CN01_DBLINK B2
+ WHERE B2.PRODUCT_ID= PRODID
+ );
+ RETURN V_TONGSOLUONG;
+ EXCEPTION
+ WHEN NO_DATA_FOUND THEN
+ RETURN NULL;
+END;
+
+-- * Thực thi function
+
+SET SERVEROUTPUT ON
+DECLARE
+ PRODID PRODUCT.PRODUCT_ID%TYPE := 'SP001DEN42';
+BEGIN
+ DBMS_OUTPUT.PUT_LINE( 'Tong luong ton kho: 
+'||FUNCTION1(PRODID));
+END;
+//Procedure : Nhập id sản phẩm, xuất ra thông tin store có lượng mua nhiều nhất trên mỗi chi nhánh chi nhánh
+CREATE OR REPLACE PROCEDURE PROCEDURE1(PRODID PRODUCT.PRODUCT_ID%TYPE)
+AS
+BEGIN
+  FOR item IN (
+    (SELECT B1.SITE_STORE AS STOREID,
+           B1.ADDRESS_2 AS DIACHI1,
+           B1.ADDRESS_3 AS DIACHI2
+    FROM DISTRIBUTIONCHANNEL B1
+    JOIN SALE S1 ON B1.SITE_STORE = S1.STORE
+    WHERE S1.PRODUCT_ID = PRODID
+    GROUP BY B1.SITE_STORE, B1.ADDRESS_2, B1.ADDRESS_3, S1.PRODUCT_ID, s1.store
+    ORDER BY SUM(S1.SOLD_QUANTITY) DESC
+    FETCH FIRST 1 ROW WITH TIES
+  )
+  UNION
+  (
+    SELECT B2.SITE_STORE AS STOREID,
+           B2.ADDRESS_2 AS DIACHI1,
+           B2.ADDRESS_3 AS DIACHI2
+    FROM DISTRIBUTIONCHANNEL@LINK_CN02 B2
+    JOIN SALE@LINK_CN02 S2 ON B2.SITE_STORE = S2.STORE
+    WHERE S2.PRODUCT_ID = PRODID
+    GROUP BY B2.SITE_STORE, B2.ADDRESS_2, B2.ADDRESS_3, S2.PRODUCT_ID, S2.store
+    ORDER BY SUM(S2.SOLD_QUANTITY) DESC
+    FETCH FIRST 1 ROW WITH TIES
+  )
+  )
+  LOOP
+    DBMS_OUTPUT.PUT_LINE(
+      'MA CHI NHANH = ' || item.STOREID ||
+      ', DIA CHI 1: ' || item.DIACHI1 ||
+      ', DIA CHI 2: ' || item.DIACHI2
+    );
+  END LOOP;
+END;
+// Thực thi procedure
+
+SET SERVEROUTPUT ON
+BEGIN
+PROCEDURE1('SP003TIM38');
+END;
+//Trigger khi nhập mới hoặc sửa dữ liệu SALE thì sẽ kiểm tra sản phẩm còn tồn trong kho không.
+CREATE OR REPLACE TRIGGER check_inventory_trigger
+BEFORE INSERT OR UPDATE ON SALE
+FOR EACH ROW
+DECLARE
+    available_quantity NUMBER;
+    PRODID PRODUCT.PRODUCT_ID%TYPE := :NEW.PRODUCT_ID;
+BEGIN
+    -- Kiểm tra tồn kho của sản phẩm trước khi thêm dữ liệu vào bảng SALE
+    available_quantity := FUNCTION1(PRODID);
+
+    -- Nếu tồn kho không đủ, ngăn chặn việc thêm dữ liệu
+    IF available_quantity IS NULL OR available_quantity < :NEW.SOLD_QUANTITY THEN
+        RAISE_APPLICATION_ERROR(-20001, 'Không đủ tồn kho cho sản phẩm này.');
+    END IF;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        RAISE_APPLICATION_ERROR(-20002, 'Sản phẩm không tồn tại trong kho.');
+END;
+
